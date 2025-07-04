@@ -965,6 +965,13 @@ void LiRequestIdrFrame(void);
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
 uint32_t LiGetHostFeatureFlags(void);
 
+// 声明全局变量 (不要使用static)
+extern uint32_t g_currentTraceId;
+
+// 声明函数
+void LiSetInputTraceId(uint32_t traceId);
+void LiClearInputTraceId(void);
+
 #ifdef __cplusplus
 }
 #endif

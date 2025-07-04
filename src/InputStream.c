@@ -92,6 +92,16 @@ typedef struct _PACKET_HOLDER {
     } packet;
 } PACKET_HOLDER, *PPACKET_HOLDER;
 
+uint32_t g_currentTraceId = 0;
+
+void LiSetInputTraceId(uint32_t traceId) {
+    g_currentTraceId = traceId;
+}
+
+void LiClearInputTraceId(void) {
+    g_currentTraceId = 0;
+}
+
 // Initializes the input stream
 int initializeInputStream(void) {
     memcpy(currentAesIv, StreamConfig.remoteInputAesIv, sizeof(currentAesIv));
@@ -212,12 +222,21 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
         // but this is on purpose. It allows us assume we have a full holder even
         // if packetLength < sizeof(*holder) and put this allocation into the free
         // list.
-        return malloc(sizeof(*holder) + extraLength);
+        holder = malloc(sizeof(*holder) + extraLength);
+        if (holder) {
+            memset(holder, 0, sizeof(*holder));
+            // 设置 traceId
+            holder->packet.header.traceId = g_currentTraceId;
+            Limelog("traceId: %d\n", g_currentTraceId);
+        }
+        return holder;
     }
 
     // Grab an entry from the free list (if available)
     err = LbqPollQueueElement(&packetHolderFreeList, (void**)&holder);
     if (err == LBQ_SUCCESS) {
+        holder->packet.header.traceId = g_currentTraceId; // 设置 traceID
+        Limelog("traceId: %d\n", g_currentTraceId);
         return holder;
     }
     else if (err == LBQ_INTERRUPTED) {
@@ -227,8 +246,15 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
     else {
         LC_ASSERT(err == LBQ_NO_ELEMENT);
 
-        // Otherwise we'll have to allocate
-        return malloc(sizeof(*holder));
+         // Otherwise we'll have to allocate
+         holder = malloc(sizeof(*holder));
+         if (holder) {
+             memset(holder, 0, sizeof(*holder));
+             // 设置 traceId
+             holder->packet.header.traceId = g_currentTraceId;
+             Limelog("traceId: %d\n", g_currentTraceId);
+         }
+         return holder;
     }
 }
 

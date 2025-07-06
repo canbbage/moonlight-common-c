@@ -24,6 +24,11 @@ static unsigned int firstPacketPresentationTime;
 static bool dropStatePending;
 static bool idrFrameProcessed;
 
+static uint32_t sunshineTraceId;
+static uint64_t sunshineInputArrivalTimeNs;
+static uint64_t sunshineEncodeStartTimeNs;
+static uint64_t sunshineEncodeEndTimeNs;
+
 #define DR_CLEANUP -1000
 
 #define CONSECUTIVE_DROP_LIMIT 120
@@ -486,6 +491,26 @@ static void reassembleFrame(int frameNumber) {
             qdu->decodeUnit.receiveTimeMs = firstPacketReceiveTime;
             qdu->decodeUnit.presentationTimeMs = firstPacketPresentationTime;
             qdu->decodeUnit.enqueueTimeMs = LiGetMillis();
+            
+            // 填充Sunshine的traceId和时间戳
+            if (IS_SUNSHINE()) {
+                qdu->decodeUnit.traceId = sunshineTraceId;
+                qdu->decodeUnit.inputArrivalTimeNs = sunshineInputArrivalTimeNs;
+                qdu->decodeUnit.encodeStartTimeNs = sunshineEncodeStartTimeNs;
+                qdu->decodeUnit.encodeEndTimeNs = sunshineEncodeEndTimeNs;
+                
+                // 重置值，避免下一帧使用旧值
+                sunshineTraceId = 0;
+                sunshineInputArrivalTimeNs = 0;
+                sunshineEncodeStartTimeNs = 0;
+                sunshineEncodeEndTimeNs = 0;
+            } else {
+                // 非Sunshine服务器，设置为0
+                qdu->decodeUnit.traceId = 0;
+                qdu->decodeUnit.inputArrivalTimeNs = 0;
+                qdu->decodeUnit.encodeStartTimeNs = 0;
+                qdu->decodeUnit.encodeEndTimeNs = 0;
+            }
 
             // These might be wrong for a few frames during a transition between SDR and HDR,
             // but the effects shouldn't very noticable since that's an infrequent operation.
@@ -889,6 +914,31 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
             BYTE_BUFFER bb;
             BbInitializeWrappedBuffer(&bb, currentPos.data, currentPos.offset + 1, 2, BYTE_ORDER_LITTLE);
             BbGet16(&bb, &frameHostProcessingLatency);
+            
+            // 从Sunshine扩展的帧头中读取traceId和时间戳
+            // 注意：这里假设我们使用的是短头部(headerType=0x01)，长度为8+24=32字节
+            // 其中前8字节是标准短头部，后24字节是扩展字段(traceId + 3个时间戳)
+            if (currentPos.length >= 32 && currentPos.data[currentPos.offset] == 0x01) {
+                // 读取traceId (4字节，位于偏移量6处)
+                BbInitializeWrappedBuffer(&bb, currentPos.data, currentPos.offset + 6, 4, BYTE_ORDER_LITTLE);
+                BbGet32(&bb, &sunshineTraceId);
+                
+                // 读取inputArrivalTimeNs (8字节，位于偏移量10处)
+                BbInitializeWrappedBuffer(&bb, currentPos.data, currentPos.offset + 10, 8, BYTE_ORDER_LITTLE);
+                BbGet64(&bb, &sunshineInputArrivalTimeNs);
+                
+                // 读取encodeStartTimeNs (8字节，位于偏移量18处)
+                BbInitializeWrappedBuffer(&bb, currentPos.data, currentPos.offset + 18, 8, BYTE_ORDER_LITTLE);
+                BbGet64(&bb, &sunshineEncodeStartTimeNs);
+                
+                // 读取encodeEndTimeNs (8字节，位于偏移量26处)
+                BbInitializeWrappedBuffer(&bb, currentPos.data, currentPos.offset + 26, 8, BYTE_ORDER_LITTLE);
+                BbGet64(&bb, &sunshineEncodeEndTimeNs);
+                if (sunshineTraceId != 0) {
+                    Limelog("从帧头读取: traceId=%u, inputArrivalTimeNs=%llu, encodeStartTimeNs=%llu, encodeEndTimeNs=%llu\n",
+                            sunshineTraceId, sunshineInputArrivalTimeNs, sunshineEncodeStartTimeNs, sunshineEncodeEndTimeNs);
+                }
+            }
         }
 
         // Codecs like H.264 and HEVC handle the FEC trailing zero padding just fine, but other
@@ -1181,4 +1231,24 @@ void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntryPtr) {
 
 int LiGetPendingVideoFrames(void) {
     return LbqGetItemCount(&decodeUnitQueue);
+}
+
+void resetVideoDepacketizer(void) {
+    decodingFrame = false;
+    nextFrameNumber = 1;
+    startFrameNumber = 0;
+    waitingForIdrFrame = true;
+    waitingForRefInvalFrame = false;
+    waitingForNextSuccessfulFrame = false;
+    lastPacketInStream = UINT32_MAX;
+    firstPacketReceiveTime = 0;
+    firstPacketPresentationTime = 0;
+    dropStatePending = false;
+    idrFrameProcessed = false;
+    
+    // 初始化Sunshine的traceId和时间戳变量
+    sunshineTraceId = 0;
+    sunshineInputArrivalTimeNs = 0;
+    sunshineEncodeStartTimeNs = 0;
+    sunshineEncodeEndTimeNs = 0;
 }

@@ -154,6 +154,12 @@ typedef struct _DECODE_UNIT {
     // (happens when the frame is repeated).
     uint16_t frameHostProcessingLatency;
 
+    // Sunshine扩展字段 - 从视频帧头中提取
+    uint32_t traceId;                // 跟踪ID
+    int64_t inputArrivalTimeNs;      // 输入到达时间（纳秒）
+    int64_t encodeStartTimeNs;       // 编码开始时间（纳秒）
+    int64_t encodeEndTimeNs;         // 编码结束时间（纳秒）
+
     // Receive time of first buffer. This value uses an implementation-defined epoch,
     // but the same epoch as enqueueTimeMs and LiGetMillis().
     uint64_t receiveTimeMs;

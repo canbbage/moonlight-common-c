@@ -227,7 +227,7 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
             memset(holder, 0, sizeof(*holder));
             // 设置 traceId
             holder->packet.header.traceId = g_currentTraceId;
-            Limelog("traceId: %d\n", g_currentTraceId);
+            // Limelog("traceId: %d\n", g_currentTraceId);
         }
         return holder;
     }
@@ -236,7 +236,7 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
     err = LbqPollQueueElement(&packetHolderFreeList, (void**)&holder);
     if (err == LBQ_SUCCESS) {
         holder->packet.header.traceId = g_currentTraceId; // 设置 traceID
-        Limelog("traceId: %d\n", g_currentTraceId);
+        // Limelog("traceId: %d\n", g_currentTraceId);
         return holder;
     }
     else if (err == LBQ_INTERRUPTED) {
@@ -252,7 +252,7 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
              memset(holder, 0, sizeof(*holder));
              // 设置 traceId
              holder->packet.header.traceId = g_currentTraceId;
-             Limelog("traceId: %d\n", g_currentTraceId);
+            //  Limelog("traceId: %d\n", g_currentTraceId);
          }
          return holder;
     }

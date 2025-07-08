@@ -978,6 +978,12 @@ extern uint32_t g_currentTraceId;
 void LiSetInputTraceId(uint32_t traceId);
 void LiClearInputTraceId(void);
 
+// 设置矩形信息的函�?
+void LiSetRectangleInfo(float x, float y, float width, float height);
+
+// 重置矩形信息的函�?
+void LiResetRectangleInfo(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -94,12 +94,41 @@ typedef struct _PACKET_HOLDER {
 
 uint32_t g_currentTraceId = 0;
 
+// 移除RECTANGLE_INFO结构体和全局变量
+float g_rectX = 0.0f;
+float g_rectY = 0.0f;
+float g_rectWidth = 0.0f;
+float g_rectHeight = 0.0f;
+bool g_rectValid = false;
+
 void LiSetInputTraceId(uint32_t traceId) {
     g_currentTraceId = traceId;
 }
 
 void LiClearInputTraceId(void) {
     g_currentTraceId = 0;
+}
+
+// 实现设置矩形信息的函数
+void LiSetRectangleInfo(float x, float y, float width, float height) {
+    g_rectX = x;
+    g_rectY = y;
+    g_rectWidth = width;
+    g_rectHeight = height;
+    g_rectValid = true;
+    
+    Limelog("设置矩形信息: (%f, %f, %f, %f)\n", x, y, width, height);
+}
+
+// 实现重置矩形信息的函数
+void LiResetRectangleInfo(void) {
+    g_rectX = 0.0f;
+    g_rectY = 0.0f;
+    g_rectWidth = 0.0f;
+    g_rectHeight = 0.0f;
+    g_rectValid = false;
+    
+    Limelog("重置矩形信息\n");
 }
 
 // Initializes the input stream
@@ -227,7 +256,27 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
             memset(holder, 0, sizeof(*holder));
             // 设置 traceId
             holder->packet.header.traceId = g_currentTraceId;
-            // Limelog("traceId: %d\n", g_currentTraceId);
+            
+            // 如果矩形信息有效且traceId不为0，则将矩形信息添加到自定义字段中
+            if (g_currentTraceId != 0 && g_rectValid) {
+                // 直接设置矩形信息到NV_INPUT_HEADER结构体中
+                holder->packet.header.rectX = g_rectX;
+                holder->packet.header.rectY = g_rectY;
+                holder->packet.header.rectWidth = g_rectWidth;
+                holder->packet.header.rectHeight = g_rectHeight;
+                
+                Limelog("添加矩形信息到输入事件: traceId=%u, rect=(%f,%f,%f,%f)\n", 
+                       g_currentTraceId,
+                       g_rectX, g_rectY,
+                       g_rectWidth, g_rectHeight);
+            }
+            else {
+                // 如果没有有效的矩形信息，则将矩形字段设置为0
+                holder->packet.header.rectX = 0.0f;
+                holder->packet.header.rectY = 0.0f;
+                holder->packet.header.rectWidth = 0.0f;
+                holder->packet.header.rectHeight = 0.0f;
+            }
         }
         return holder;
     }
@@ -236,7 +285,28 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
     err = LbqPollQueueElement(&packetHolderFreeList, (void**)&holder);
     if (err == LBQ_SUCCESS) {
         holder->packet.header.traceId = g_currentTraceId; // 设置 traceID
-        // Limelog("traceId: %d\n", g_currentTraceId);
+        
+        // 如果矩形信息有效且traceId不为0，则将矩形信息添加到自定义字段中
+        if (g_currentTraceId != 0 && g_rectValid) {
+            // 直接设置矩形信息到NV_INPUT_HEADER结构体中
+            holder->packet.header.rectX = g_rectX;
+            holder->packet.header.rectY = g_rectY;
+            holder->packet.header.rectWidth = g_rectWidth;
+            holder->packet.header.rectHeight = g_rectHeight;
+            
+            Limelog("添加矩形信息到输入事件: traceId=%u, rect=(%f,%f,%f,%f)\n", 
+                   g_currentTraceId,
+                   g_rectX, g_rectY,
+                   g_rectWidth, g_rectHeight);
+        }
+        else {
+            // 如果没有有效的矩形信息，则将矩形字段设置为0
+            holder->packet.header.rectX = 0.0f;
+            holder->packet.header.rectY = 0.0f;
+            holder->packet.header.rectWidth = 0.0f;
+            holder->packet.header.rectHeight = 0.0f;
+        }
+        
         return holder;
     }
     else if (err == LBQ_INTERRUPTED) {
@@ -252,7 +322,27 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
              memset(holder, 0, sizeof(*holder));
              // 设置 traceId
              holder->packet.header.traceId = g_currentTraceId;
-            //  Limelog("traceId: %d\n", g_currentTraceId);
+             
+             // 如果矩形信息有效且traceId不为0，则将矩形信息添加到自定义字段中
+             if (g_currentTraceId != 0 && g_rectValid) {
+                 // 直接设置矩形信息到NV_INPUT_HEADER结构体中
+                 holder->packet.header.rectX = g_rectX;
+                 holder->packet.header.rectY = g_rectY;
+                 holder->packet.header.rectWidth = g_rectWidth;
+                 holder->packet.header.rectHeight = g_rectHeight;
+                 
+                 Limelog("添加矩形信息到输入事件: traceId=%u, rect=(%f,%f,%f,%f)\n", 
+                        g_currentTraceId,
+                        g_rectX, g_rectY,
+                        g_rectWidth, g_rectHeight);
+             }
+             else {
+                 // 如果没有有效的矩形信息，则将矩形字段设置为0
+                 holder->packet.header.rectX = 0.0f;
+                 holder->packet.header.rectY = 0.0f;
+                 holder->packet.header.rectWidth = 0.0f;
+                 holder->packet.header.rectHeight = 0.0f;
+             }
          }
          return holder;
     }

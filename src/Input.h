@@ -12,6 +12,11 @@ typedef struct _NV_INPUT_HEADER {
     uint32_t size; // Size of packet (excluding this field) - Big Endian
     uint32_t magic; // Packet type - Little Endian
     uint32_t traceId;
+    // 添加矩形位置信息字段
+    float rectX;
+    float rectY;
+    float rectWidth;
+    float rectHeight;
 } NV_INPUT_HEADER, *PNV_INPUT_HEADER;
 
 #define ENABLE_HAPTICS_MAGIC 0x0000000D

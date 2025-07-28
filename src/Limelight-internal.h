@@ -151,3 +151,6 @@ int initializeInputStream(void);
 void destroyInputStream(void);
 int startInputStream(void);
 int stopInputStream(void);
+
+void setUsvcProcessingEnabled(bool enabled);  
+bool isUsvcProcessingEnabled(void);

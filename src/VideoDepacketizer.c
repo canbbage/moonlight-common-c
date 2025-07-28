@@ -28,6 +28,10 @@ static uint32_t sunshineTraceId;
 static uint64_t sunshineInputArrivalTimeNs;
 static uint64_t sunshineEncodeStartTimeNs;
 static uint64_t sunshineEncodeEndTimeNs;
+// USVC 处理相关状态变量  
+static bool usvcProcessingEnabled = true;  
+static bool usvc0FrameCompleted = false;  
+static unsigned int lastCompletedUsvc0Frame = 0;
 
 #define DR_CLEANUP -1000
 
@@ -81,6 +85,10 @@ void initializeVideoDepacketizer(int pktSize) {
     dropStatePending = false;
     idrFrameProcessed = false;
     strictIdrFrameWait = !isReferenceFrameInvalidationEnabled();
+    // 初始化 USVC 处理状态  
+    usvcProcessingEnabled = true;  
+    usvc0FrameCompleted = false;  
+    lastCompletedUsvc0Frame = 0;  
 }
 
 // Free the NAL chain
@@ -99,9 +107,11 @@ static void cleanupFrameState(void) {
 }
 
 // Cleanup frame state and set that we're waiting for an IDR Frame
-static void dropFrameState(void) {
+static void dropFrameState(int frameIndex) {
     // This may only be called at frame boundaries
     LC_ASSERT(!decodingFrame);
+
+    Limelog("drop frame state, frameIndex: %d\n", frameIndex);
 
     // We're dropping frame state now
     dropStatePending = false;
@@ -109,10 +119,13 @@ static void dropFrameState(void) {
     if (strictIdrFrameWait || !idrFrameProcessed || waitingForIdrFrame) {
         // We'll need an IDR frame now if we're in non-RFI mode, if we've never
         // received an IDR frame, or if we explicitly need an IDR frame.
+        Limelog("drop frame state, waiting for idr frame, strictIdrFrameWait: %d, idrFrameProcessed: %d, waitingForIdrFrame: %d\n", 
+            strictIdrFrameWait, idrFrameProcessed, waitingForIdrFrame);
         waitingForIdrFrame = true;
     }
     else {
         waitingForRefInvalFrame = true;
+        Limelog("drop frame state, waiting for ref inval frame\n");
     }
 
     // Count the number of consecutive frames dropped
@@ -129,6 +142,11 @@ static void dropFrameState(void) {
         waitingForIdrFrame = true;
         LiRequestIdrFrame();
     }
+    // 重置 USVC 处理状态  
+    if (usvcProcessingEnabled) {  
+        usvc0FrameCompleted = false;  
+        lastCompletedUsvc0Frame = 0;  
+    }  
 
     cleanupFrameState();
 }
@@ -296,6 +314,7 @@ void LiCompleteVideoFrame(VIDEO_FRAME_HANDLE handle, int drStatus) {
     else if (drStatus == DR_OK && qdu->decodeUnit.frameType == FRAME_TYPE_IDR) {
         // Remember that the IDR frame was processed. We can now use
         // reference frame invalidation.
+        Limelog("idr frame processed by decoder\n");
         idrFrameProcessed = true;
     }
 
@@ -522,6 +541,7 @@ static void reassembleFrame(int frameNumber) {
             // Invoke the key frame callback if needed
             if (qdu->decodeUnit.frameType == FRAME_TYPE_IDR) {
                 notifyKeyFrameReceived();
+                Limelog("idr frame received in reassembleFrame\n");
             }
 
             nalChainHead = nalChainTail = NULL;
@@ -537,7 +557,8 @@ static void reassembleFrame(int frameNumber) {
                     // Clear NAL state for the frame that we failed to enqueue
                     nalChainHead = qdu->decodeUnit.bufferList;
                     nalChainDataLength = qdu->decodeUnit.fullLength;
-                    dropFrameState();
+                    Limelog("drop frame state at point 1\n");
+                    dropFrameState(frameNumber);
 
                     // Free the DU we were going to queue
                     free(qdu);
@@ -562,8 +583,16 @@ static void reassembleFrame(int frameNumber) {
             // Clear frame drops
             consecutiveFrameDrops = 0;
 
+            if (usvcProcessingEnabled) {
+                startFrameNumber = nextFrameNumber/2 + 1;
+                Limelog("startFrameNumber: %d\n", startFrameNumber);
+            } else {
+                startFrameNumber = nextFrameNumber;
+                Limelog("startFrameNumber: %d\n", startFrameNumber);
+            }
+
             // Move the start of our (potential) RFI window to the next frame
-            startFrameNumber = nextFrameNumber;
+            //startFrameNumber = nextFrameNumber;
         }
     }
 }
@@ -697,6 +726,7 @@ static void processAvcHevcRtpPayloadSlow(PBUFFER_DESC currentPos, PLENTRY_INTERN
         if (isSeqReferenceFrameStart(currentPos)) {
             // No longer waiting for an IDR frame
             waitingForIdrFrame = false;
+            Limelog("waitingForIdrFrame set to false\n");
             waitingForRefInvalFrame = false;
 
             // Cancel any pending IDR frame request
@@ -786,6 +816,10 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
     firstPacket = isFirstPacket(flags, fecCurrentBlockNumber);
     lastPacket = (flags & FLAG_EOF) && fecCurrentBlockNumber == fecLastBlockNumber;
 
+    unsigned int originalFrameNumber = (frameIndex+1) / 2;  
+    // usvc0 帧使用奇数 frameIndex (2t-1)，usvc1 帧使用偶数 frameIndex (2t)  
+    bool isUsvc0Frame = (frameIndex % 2 == 1);  
+
     LC_ASSERT_VT((flags & ~(FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA)) == 0);
 
     streamPacketIndex = videoPacket->streamPacketIndex;
@@ -803,12 +837,19 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
         Limelog("Depacketizer detected corrupt frame: %d", frameIndex);
         decodingFrame = false;
         nextFrameNumber = frameIndex + 1;
-        dropFrameState();
+        Limelog("drop frame state at point 2\n");
+        dropFrameState(frameIndex);
         if (waitingForIdrFrame) {
             LiRequestIdrFrame();
         }
         else {
-            connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+            if (usvcProcessingEnabled) {
+                if (isUsvc0Frame) {
+                    connectionDetectedFrameLoss(startFrameNumber, originalFrameNumber);
+                }
+            } else {
+                connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+            }
         }
         return;
     }
@@ -835,7 +876,8 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 
             // Wait until next complete frame
             waitingForNextSuccessfulFrame = true;
-            dropFrameState();
+            Limelog("drop frame state at point 3\n");
+            dropFrameState(frameIndex);
         }
         else {
             LC_ASSERT(nextFrameNumber == frameIndex);
@@ -875,10 +917,14 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
             case 2: // IDR frame
                 // For other codecs, we trust the frame header rather than parsing the bitstream
                 // to determine if a given frame is an IDR frame.
+                {
                 if (!(NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265))) {
                     waitingForIdrFrame = false;
                     waitingForNextSuccessfulFrame = false;
                     frameType = FRAME_TYPE_IDR;
+                    Limelog("idr frame received in processRtpPayload other codecs\n");
+                }
+                Limelog("idr frame received in processRtpPayload all\n");
                 }
                 // Fall-through
             case 4: // Intra-refresh
@@ -902,7 +948,11 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
         else {
             // Hope for the best with older servers
             if (waitingForRefInvalFrame) {
-                connectionDetectedFrameLoss(startFrameNumber, frameIndex - 1);
+                if (usvcProcessingEnabled) {
+                    connectionDetectedFrameLoss(startFrameNumber, originalFrameNumber - 1);  
+                } else {
+                    connectionDetectedFrameLoss(startFrameNumber, frameIndex - 1);
+                }
                 waitingForRefInvalFrame = false;
                 waitingForNextSuccessfulFrame = false;
             }
@@ -1091,12 +1141,19 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
                 // Skip to the next frame and tell the host we lost this one
                 decodingFrame = false;
                 nextFrameNumber = frameIndex + 1;
-                dropFrameState();
+                Limelog("drop frame state at point 4\n");
+                dropFrameState(frameIndex);
                 if (waitingForIdrFrame) {
                     LiRequestIdrFrame();
                 }
                 else {
-                    connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+                    if (usvcProcessingEnabled) {
+                        if (isUsvc0Frame) {
+                            connectionDetectedFrameLoss(startFrameNumber, originalFrameNumber);
+                        }
+                    } else {
+                        connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+                    }
                 }
 
                 return;
@@ -1114,7 +1171,7 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 
         // If we can't submit this frame due to a discontinuity in the bitstream,
         // inform the host (if needed) and drop the data.
-        if (waitingForIdrFrame || waitingForRefInvalFrame) {
+        if (waitingForIdrFrame) {
             // IDR wait takes priority over RFI wait (and an IDR frame will satisfy both)
             if (waitingForIdrFrame) {
                 Limelog("Waiting for IDR frame\n");
@@ -1130,11 +1187,18 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
                 // If we need an RFI frame first, then drop this frame
                 // and update the reference frame invalidation window.
                 Limelog("Waiting for RFI frame\n");
-                connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+                if (usvcProcessingEnabled) {
+                    if (isUsvc0Frame) {
+                        connectionDetectedFrameLoss(startFrameNumber, originalFrameNumber);  
+                    } 
+                } else {
+                    connectionDetectedFrameLoss(startFrameNumber, frameIndex);
+                }
             }
 
             waitingForNextSuccessfulFrame = false;
-            dropFrameState();
+            Limelog("drop frame state at point 5\n");
+            dropFrameState(frameIndex);
             return;
         }
 
@@ -1155,13 +1219,83 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
                 dropStatePending = false;
             }
             else {
-                dropFrameState();
+                Limelog("drop frame state at point 6\n");
+                dropFrameState(frameIndex);
                 return;
             }
         }
+        // USVC 处理逻辑  
+        if (usvcProcessingEnabled) {  
+          
+            if (isUsvc0Frame) {  
+                // 处理 usvc0 帧 
+                Limelog("Processing usvc0 frame %d\n", frameIndex);  
+              
+                // 正常处理 usvc0 帧  
+                reassembleFrame(originalFrameNumber);  
+              
+                // 标记 usvc0 帧已完成  
+                usvc0FrameCompleted = true;  
+                lastCompletedUsvc0Frame = frameIndex;  
+              
+            } else {  
+                // 处理 usvc1 帧  
+                unsigned int expectedUsvc0Frame = frameIndex - 1;  
+              
+                if (usvc0FrameCompleted && lastCompletedUsvc0Frame == expectedUsvc0Frame) {  
+                    // 对应的 usvc0 帧已完成，静默丢弃此 usvc1 帧  
+                    Limelog("Dropping usvc1 frame %d - usvc0 frame %d already processed\n",   
+                        frameIndex, expectedUsvc0Frame);  
+                  
+                    // 清理当前帧状态但不上报丢帧  
+                    cleanupFrameState();  
+                  
+                    // 重置 USVC 状态，准备下一个帧对  
+                    usvc0FrameCompleted = false;  
+                    lastCompletedUsvc0Frame = 0;  
+                  
+                    return;  
+                  
+                } else {  
+                    // usvc0 帧丢失，上报原始帧 t 丢失并处理 usvc1 帧 
+                    if(frameType == FRAME_TYPE_IDR){
+                        Limelog("Processing usvc1 frame %d - usvc0 frame %d was lost, but we don't need to report original frame %d lost, becase this is IDR frame\n",   
+                            frameIndex, expectedUsvc0Frame, originalFrameNumber);  
+                    }else{
+                        Limelog("Processing usvc1 frame %d - usvc0 frame %d was lost, reporting original frame %d lost\n",   
+                            frameIndex, expectedUsvc0Frame, originalFrameNumber);  
+                        // 上报原始帧 t 丢失给 Sunshine  
+                        connectionDetectedFrameLoss(startFrameNumber, originalFrameNumber); 
+                    }
+                  
+                    // 处理 usvc1 帧  
+                    reassembleFrame(originalFrameNumber);  
+                  
+                    // 重置 USVC 状态  
+                    usvc0FrameCompleted = false;  
+                    lastCompletedUsvc0Frame = 0;  
+                }  
+            }  
+        } else {  
+            // 原有逻辑：直接处理帧  
+            reassembleFrame(frameIndex);  
+        }  
 
-        reassembleFrame(frameIndex);
+        //reassembleFrame(frameIndex);
     }
+}
+
+void setUsvcProcessingEnabled(bool enabled) {  
+    usvcProcessingEnabled = enabled;  
+    if (!enabled) {  
+        // 禁用时重置状态  
+        usvc0FrameCompleted = false;  
+        lastCompletedUsvc0Frame = 0;  
+    }  
+}  
+  
+bool isUsvcProcessingEnabled(void) {  
+    return usvcProcessingEnabled;  
 }
 
 // Called by the video RTP FEC queue to notify us of a lost frame
@@ -1170,27 +1304,56 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 // that we lost a frame and submit an RFI request.
 void notifyFrameLost(unsigned int frameNumber, bool speculative) {
     // We may not invalidate frames that we've already received
-    LC_ASSERT(frameNumber >= startFrameNumber);
+    if (usvcProcessingEnabled) {
+        LC_ASSERT(frameNumber >= (startFrameNumber-1)*2);
+    }
+    else{
+        LC_ASSERT(frameNumber >= startFrameNumber);
+    }
+    
 
     // Drop state and determine if we need an IDR frame or if RFI is okay
-    dropFrameState();
+    Limelog("drop frame state at point 7\n");
+    dropFrameState(frameNumber);
 
     // If dropFrameState() determined that RFI was usable, issue it now
     if (!waitingForIdrFrame) {
         LC_ASSERT(waitingForRefInvalFrame);
 
-        if (speculative) {
+        /*if (speculative) {
             Limelog("Sending speculative RFI request for predicted loss of frame %d\n", frameNumber);
         }
         else {
             Limelog("Sending RFI request for unrecoverable frame %d\n", frameNumber);
-        }
+        }*/
 
         // Advance the frame number since we won't be expecting this one anymore
         nextFrameNumber = frameNumber + 1;
+        
+        if (usvcProcessingEnabled) {
+            unsigned int originalFrameNumber = (frameNumber+1) / 2;  
+            bool isUsvc0Frame = (frameNumber % 2 == 1);  
+            if (isUsvc0Frame) {
+                connectionDetectedFrameLoss(startFrameNumber, originalFrameNumber);
+                if (speculative) {
+                    Limelog("Sending speculative RFI request for predicted loss of original frame %d\n", originalFrameNumber);
+                }
+                else {
+                    Limelog("Sending RFI request for unrecoverable original frame %d\n", originalFrameNumber);
+                }
+            }
+        } else {
+            connectionDetectedFrameLoss(startFrameNumber, frameNumber);
+            if (speculative) {
+                Limelog("Sending speculative RFI request for predicted loss of frame %d\n", frameNumber);
+            }
+            else {
+                Limelog("Sending RFI request for unrecoverable frame %d\n", frameNumber);
+            }
+        }
 
         // Notify the host that we lost this one
-        connectionDetectedFrameLoss(startFrameNumber, frameNumber);
+        //connectionDetectedFrameLoss(startFrameNumber, frameNumber);
     }
 }
 
@@ -1251,4 +1414,8 @@ void resetVideoDepacketizer(void) {
     sunshineInputArrivalTimeNs = 0;
     sunshineEncodeStartTimeNs = 0;
     sunshineEncodeEndTimeNs = 0;
+
+    usvcProcessingEnabled = true;  
+    usvc0FrameCompleted = false;  
+    lastCompletedUsvc0Frame = 0; 
 }
